@@ -1,0 +1,43 @@
+openstack:
+  username: ''
+  password: ''
+  tenant_name: ''
+  project_name: ''
+  auth_url: 'https://rackspace-api.cloudify.co:5000/v3'
+  region: 'RegionOne'
+
+
+server:
+  image_name: 'rhel-server-7.6'
+  flavor_name: 'm1.medium'
+  network_name: 'PublicNetwork'
+  security_group: 'CloudifyManager'
+  keypair_name: 'agent_key'
+  ssh_user: 'cloud-user'
+  key: 'resources/cm.key'
+  db_server_name: 'postgres'
+  rabbit_server_name: 'rabbitmq-'
+  manager_server_name: 'cfymgr-'
+
+cloudify_config:
+  rpm_url: 'http://repository.cloudifysource.org/cloudify/5.0.5/.dev1-release/cloudify-manager-install-5.0.5-.dev1.x86_64.rpm'
+  cfy4_ips:
+    - '172.17.150.128'
+    - '172.17.150.129'
+    - '172.17.150.130'
+  rest_client:
+    username: 'admin'
+    password: 'admin'
+    protocol: 'https'
+    headers:
+      Tenant: 'default_tenant'
+    cert: ''
+    trust_all: True
+  resources:
+    - source: 'https://raw.githubusercontent.com/cloudify-cosmo/cloudify-manager/4.5.5/resources/rest-service/cloudify/types/types.yaml'
+      target: 'spec/cloudify/4.5.5/types.yaml'
+  db_pass: 'cloud#1234'
+  ca_cert: ''
+  ca_key: ''
+
+
