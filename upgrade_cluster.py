@@ -127,7 +127,7 @@ def download_cloudify_rpm(server, rpm_url, logger):
 
 def download_cloudify_rpm_locally(rpm_url, logger):
     logger.info("Downloading RPM from %s to local machine", rpm_url)
-    os.system('curl -C -o cloudify-manager-install.rpm %s' % rpm_url)
+    os.system('curl -C - -o cloudify-manager-install.rpm %s' % rpm_url)
 
 
 def install_rpm(server, logger):
