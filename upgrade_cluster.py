@@ -127,7 +127,7 @@ def download_cloudify_rpm(server, rpm_url, logger):
 
 def download_cloudify_rpm_locally(rpm_url, logger):
     logger.info("Downloading RPM from %s to local machine", rpm_url)
-    os.system('curl -C - -o cloudify-manager-install.rpm %s' % rpm_url)
+    os.system('curl %s -o cloudify-manager-install.rpm -C -' % rpm_url)
 
 
 def install_rpm(server, logger):
@@ -324,7 +324,10 @@ def prepare_manager_install_config(server, config, db_ip, db_pass,
         '{}/.certs/manager_ca.pem'.format(server_home_path)
     install_config['ssl_inputs']['ca_key_path'] = \
         '{}/.certs/manager_ca_key.pem'.format(server_home_path)
-
+    install_config['ssl_inputs']['external_ca_cert_path'] = \
+        '{}/.certs/manager_ca.pem'.format(server_home_path)
+    install_config['ssl_inputs']['external_ca_key_path'] = \
+        '{}/.certs/manager_ca_key.pem'.format(server_home_path)
 
     install_config['restservice'] = dict()
     install_config['restservice']['ldap'] = dict()
