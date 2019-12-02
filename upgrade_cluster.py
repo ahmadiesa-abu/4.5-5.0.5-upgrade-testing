@@ -9,6 +9,8 @@ import socket
 import openstack
 
 from fabric.api import settings, run, get, put
+from fabric.contrib.files import exists
+
 
 from cloudify_rest_client.client import CloudifyClient
 
@@ -68,6 +70,8 @@ def get_host_ssh_conf(server_instance, config, server_name):
 
 def get_fabric_settings(host):
     return settings(
+        connection_attempts=5,
+        disable_known_hosts=True,
         host_string=host['ip'],
         key_filename=os.path.abspath(host['key']),
         user=host['ssh_user'])
@@ -119,7 +123,8 @@ def create_openstack_server(openstack_connection, server_config, server_name,
 
 
 def download_cloudify_rpm(server, rpm_url, logger):
-    logger.info("Downloading RPM from %s", rpm_url)
+    #logger.info("Downloading RPM from %s", rpm_url)
+    logger.info("Copying RPM from Local")
     with get_fabric_settings(server):
         put('cloudify-manager-install.rpm', 'cloudify-manager-install.rpm')
         #run('curl -o cloudify-manager-install.rpm %s' % rpm_url)
@@ -228,8 +233,6 @@ def prepare_database_install_config(server, config, db_servers, logger):
     install_config['postgresql_server']['cluster']['postgres'] = dict()
     install_config['postgresql_server']['cluster']['postgres'][
         'replicator_password'] = db_pass
-
-
 
     install_config['postgresql_server']['cert_path'] = \
         '{}/.certs/postgres_crt.pem'.format(server_home_path)
@@ -373,7 +376,6 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
             install_config['postgresql_server']['cluster']['nodes'][k][
                 'node_id'] = get_node_id(db_servers[k], config, logging)
 
-
     install_config['postgresql_client'] = dict()
     install_config['postgresql_client']['ssl_enabled'] = True
     install_config['postgresql_client']['ssl_client_verification'] = False
@@ -445,11 +447,9 @@ def upload_resources(server, config, logger):
             run('sudo chown cfyuser:cfyuser %s' % target_abspath)
 
 
-def create_database_servers(openstack_connection, config, logger):
-
+def create_cluster_hosts(openstack_connection, config, logger):
     server_name = config['server']['db_server_name']
 
-    cluster_members = dict()
     db_servers = dict()
     db_servers[server_name + '1'] = create_openstack_server(
         openstack_connection, config['server'], server_name + '1', logger)
@@ -457,6 +457,31 @@ def create_database_servers(openstack_connection, config, logger):
         openstack_connection, config['server'], server_name + '2', logger)
     db_servers[server_name + '3'] = create_openstack_server(
         openstack_connection, config['server'], server_name + '3', logger)
+
+    server_name = config['server']['rabbit_server_name']
+    rabbit_servers = dict()
+    rabbit_servers[server_name + '1'] = create_openstack_server(
+        openstack_connection, config['server'], server_name + '1', logger)
+    rabbit_servers[server_name + '2'] = create_openstack_server(
+        openstack_connection, config['server'], server_name + '2', logger)
+    rabbit_servers[server_name + '3'] = create_openstack_server(
+        openstack_connection, config['server'], server_name + '3', logger)
+
+    server_name = config['server']['manager_server_name']
+    manager_servers = dict()
+    manager_servers[server_name + '1'] = create_openstack_server(
+        openstack_connection, config['server'], server_name + '1', logger)
+    manager_servers[server_name + '2'] = create_openstack_server(
+        openstack_connection, config['server'], server_name + '2', logger)
+    manager_servers[server_name + '3'] = create_openstack_server(
+        openstack_connection, config['server'], server_name + '3', logger)
+
+    return db_servers, rabbit_servers, manager_servers
+
+
+def configure_database_servers(db_servers, config, logger):
+
+    cluster_members = dict()
 
     for k in sorted(db_servers.keys()):
         server = get_host_ssh_conf(db_servers[k], config, k)
@@ -476,17 +501,9 @@ def create_database_servers(openstack_connection, config, logger):
     return cluster_members, config['cloudify_config']['db_pass']
 
 
-def create_rabbitmq_servers(openstack_connection, config, logger):
+def configure_rabbitmq_servers(rabbit_servers, config, logger):
 
-    server_name = config['server']['rabbit_server_name']
     cluster_members = dict()
-    rabbit_servers = dict()
-    rabbit_servers[server_name+'1'] = create_openstack_server(
-        openstack_connection, config['server'], server_name + '1', logger)
-    rabbit_servers[server_name+'2'] = create_openstack_server(
-        openstack_connection, config['server'], server_name + '2', logger)
-    rabbit_servers[server_name+'3'] = create_openstack_server(
-        openstack_connection, config['server'], server_name + '3', logger)
 
     erlang_cookie = str(uuid.uuid4())
 
@@ -513,18 +530,10 @@ def create_rabbitmq_servers(openstack_connection, config, logger):
     return cluster_members
 
 
-def create_cloudify_managers(openstack_connection, config, db_servers, db_pass,
-                             rabbitmq_servers, logger):
+def configure_cloudify_managers(db_servers, db_pass, rabbitmq_servers,
+                             manager_servers, config,  logger):
 
-    server_name = config['server']['manager_server_name']
     cluster_memebers = dict()
-    manager_servers = dict()
-    manager_servers[server_name+'1'] = create_openstack_server(
-        openstack_connection, config['server'], server_name + '1', logger)
-    manager_servers[server_name+'2'] = create_openstack_server(
-        openstack_connection, config['server'], server_name + '2', logger)
-    manager_servers[server_name+'3'] = create_openstack_server(
-        openstack_connection, config['server'], server_name + '3', logger)
 
     first = True
     for k in sorted(manager_servers.keys()):
@@ -628,6 +637,33 @@ def get_cfy4_config(config, active_manager, logger):
         get('/etc/cloudify/config.yaml', 'resources/cfy4_config.yaml')
 
 
+def get_cfy4_ssh_files(config, active_manager, logger):
+    os.system('mkdir resources/.ssh')
+    server = dict()
+    server['ip'] = active_manager
+    server['key'] = config['server']['key']
+    server['ssh_user'] = config['server']['ssh_user']
+    with get_fabric_settings(server):
+        logger.info('get cloudify 4 ssh files')
+        if exists('/etc/cloudify/.ssh'):
+            get('/etc/cloudify/.ssh/*', 'resources/.ssh/', use_sudo=True)
+
+
+def put_cfy4_ssh_files_to_cfy5(config, cfy_5_managers, logger):
+    for manager in cfy_5_managers:
+        server = dict()
+        server['ip'] = manager
+        server['key'] = config['server']['key']
+        server['ssh_user'] = config['server']['ssh_user']
+        with get_fabric_settings(server):
+            logger.info("Uploading ssh files to temporary ")
+            run('mkdir /tmp/.ssh')
+            put('resources/.ssh/*', '/tmp/.ssh/', use_sudo=True)
+            logger.info("Moving temporary files into /etc/cloudify/.ssh")
+            run('sudo mv /tmp/.ssh /etc/cloudify/.ssh')
+            run('sudo chown cfyuser:cfyuser /etc/cloudify/.ssh')
+
+
 def upload_snapshot(config, active_manager, snapshot_id, logger):
     server = dict()
     server['ip'] = active_manager
@@ -659,6 +695,16 @@ def install_all_agents(config, active_manager, logger):
         run('cfy agents install --all-tenants')
 
 
+def validate_agents(config, active_manager, logger):
+    server = dict()
+    server['ip'] = active_manager
+    server['key'] = config['server']['key']
+    server['ssh_user'] = config['server']['ssh_user']
+    with get_fabric_settings(server):
+        logger.info('validate agents')
+        run('cfy agents validate --all-tenants')
+
+
 def prepare_cfy_5_cluster(config, logger):
 
     prepare_ca_certificate(config)
@@ -667,22 +713,27 @@ def prepare_cfy_5_cluster(config, logger):
 
     openstack_connection = create_openstack_connection(config['openstack'])
 
-    db_servers, db_pass = create_database_servers(openstack_connection, config,
-                                                  logger)
-    rabbitmq_cluster_members = create_rabbitmq_servers(openstack_connection,
-                                                       config, logging)
-    cloudify_managers = create_cloudify_managers(openstack_connection, config,
-                                                 db_servers, db_pass,
-                                                 rabbitmq_cluster_members,
-                                                 logger)
-    return cloudify_managers.values()
+    db_servers, rabbit_servers, manager_servers = create_cluster_hosts(
+        openstack_connection, config, logger)
+
+    db_servers, db_pass = configure_database_servers(db_servers, config,
+                                                     logger)
+
+    rabbitmq_cluster_members = configure_rabbitmq_servers(rabbit_servers,
+                                                          config, logging)
+
+    cloudify_managers = configure_cloudify_managers(db_servers, db_pass,
+                                                    rabbitmq_cluster_members,
+                                                    manager_servers, config,
+                                                    logger)
+    return cloudify_managers.values(), rabbitmq_cluster_members.values()
 
 
 def stop_cfy_5_other_mangers(config, cfy_5_managers, active_manager, logger):
-    for i in cfy_5_managers:
-        if i != active_manager:
+    for manager in cfy_5_managers:
+        if manager != active_manager:
             server = dict()
-            server['ip'] = i
+            server['ip'] = manager
             server['key'] = config['server']['key']
             server['ssh_user'] = config['server']['ssh_user']
             with get_fabric_settings(server):
@@ -691,15 +742,39 @@ def stop_cfy_5_other_mangers(config, cfy_5_managers, active_manager, logger):
 
 
 def start_cfy_5_other_mangers(config, cfy_5_managers, active_manager, logger):
-    for i in cfy_5_managers:
-        if i != active_manager:
+    for manager in cfy_5_managers:
+        if manager != active_manager:
             server = dict()
-            server['ip'] = i
+            server['ip'] = manager
             server['key'] = config['server']['key']
             server['ssh_user'] = config['server']['ssh_user']
             with get_fabric_settings(server):
                 logger.info('start manager')
                 run('cfy_manager start')
+
+
+def reconfigure_ha_proxy(config, rabbitmq_servers, cfy_5_managers, logger):
+    server = dict()
+    server['ip'] = config['cloudify_config']['ha_proxy']
+    server['key'] = config['server']['key']
+    server['ssh_user'] = config['server']['ssh_user']
+    with get_fabric_settings(server):
+        logger.info('replace cfy4 ips with cfy5')
+
+        run("sudo sed -i 's/server cm1.*:5671/server rabbitmq-1 {}:5671/g'  "
+            "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers[0]))
+        run("sudo sed -i 's/server cm2.*:5671/server rabbitmq-2 {}:5671/g'  "
+            "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers[1]))
+        run("sudo sed -i 's/server cm3.*:5671/server rabbitmq-3 {}:5671/g'  "
+            "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers[2]))
+
+        run("sudo sed -i 's/server cm1.*:/server cfymgr-1 {}:/g'  "
+            "/etc/haproxy/haproxy.cfg".format(cfy_5_managers[0]))
+        run("sudo sed -i 's/server cm2.*:/server cfymgr-2 {}:/g'  "
+            "/etc/haproxy/haproxy.cfg".format(cfy_5_managers[1]))
+        run("sudo sed -i 's/server cm3.*:/server cfymgr-3 {}:/g'  "
+            "/etc/haproxy/haproxy.cfg".format(cfy_5_managers[2]))
+        run('sudo systemctl restart haproxy')
 
 
 def main():
@@ -710,19 +785,27 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     active_cfy4_manager = get_cfy_manager4_active(config)
+    logging.info("Active Manager in 4.X Cluster is {}".format(
+        active_cfy4_manager))
     get_cfy4_config(config, active_cfy4_manager, logging)
+    get_cfy4_ssh_files(config, active_cfy4_manager, logging)
     create_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
     get_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
 
-    cfy5_managers = prepare_cfy_5_cluster(config, logging)
+    cfy5_managers, rabbitmq_servers = prepare_cfy_5_cluster(config, logging)
     active_cfy5_manager = cfy5_managers[0]
+    logging.info("Active Manager in 5.X Cluster is {}".format(
+        active_cfy5_manager))
     stop_cfy_5_other_mangers(config, cfy5_managers, active_cfy5_manager,
                              logging)
     upload_snapshot(config, active_cfy5_manager, 'upgrade-to-cfy5', logging)
     restore_snapshot(config, active_cfy5_manager, 'upgrade-to-cfy5', logging)
     start_cfy_5_other_mangers(config, cfy5_managers, active_cfy5_manager,
                               logging)
+    put_cfy4_ssh_files_to_cfy5(config, cfy5_managers, logging)
+    reconfigure_ha_proxy(config, rabbitmq_servers, cfy5_managers, logging)
     install_all_agents(config, active_cfy5_manager, logging)
+    validate_agents(config, active_cfy5_manager, logging)
 
 
 if __name__ == '__main__':
