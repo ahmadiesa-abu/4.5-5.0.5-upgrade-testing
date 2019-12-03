@@ -849,13 +849,13 @@ def main():
 
     logging.basicConfig(level=logging.INFO)
 
-    # active_cfy4_manager = get_cfy_manager4_active(config)
-    # logging.info("Active Manager in 4.X Cluster is {}".format(
-    #     active_cfy4_manager))
-    # get_cfy4_config(config, active_cfy4_manager, logging)
-    # get_cfy4_ssh_files(config, active_cfy4_manager, logging)
-    # create_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
-    # get_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
+    active_cfy4_manager = get_cfy_manager4_active(config)
+    logging.info("Active Manager in 4.X Cluster is {}".format(
+        active_cfy4_manager))
+    get_cfy4_config(config, active_cfy4_manager, logging)
+    get_cfy4_ssh_files(config, active_cfy4_manager, logging)
+    create_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
+    get_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
 
     cfy5_managers, rabbitmq_servers = prepare_cfy_5_cluster(config, logging)
     active_cfy5_manager = cfy5_managers[0]
