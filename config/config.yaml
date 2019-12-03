@@ -11,20 +11,22 @@ server:
   image_name: 'rhel-server-7.6'
   flavor_name: 'm1.medium'
   network_name: 'PublicNetwork'
-  security_group: 'CloudifyManager'
+  security_group: 'allow-all'
   keypair_name: 'agent_key'
   ssh_user: 'cloud-user'
   key: 'resources/cm.key'
-  db_server_name: 'postgres'
+  db_server_name: 'postgres-'
   rabbit_server_name: 'rabbitmq-'
   manager_server_name: 'cfymgr-'
+  dns_domain: '.fairvlad.dns-cloud.net'
 
 cloudify_config:
-  rpm_url: 'http://repository.cloudifysource.org/cloudify/5.0.5/.dev1-release/cloudify-manager-install-5.0.5-.dev1.x86_64.rpm'
+  rpm_url: 'http://cloudify-release-eu.s3.amazonaws.com/cloudify/5.0.5/.dev1-release/cloudify-manager-install-5.0.5-.dev1.x86_64.rpm'
   cfy4_ips:
-    - '172.17.150.128'
-    - '172.17.150.129'
-    - '172.17.150.130'
+    - '172.17.150.220'
+    - '172.17.150.219'
+    - '172.17.150.218'
+  ha_proxy: '172.17.150.217'
   rest_client:
     username: 'admin'
     password: 'admin'
@@ -37,7 +39,6 @@ cloudify_config:
     - source: 'https://raw.githubusercontent.com/cloudify-cosmo/cloudify-manager/4.5.5/resources/rest-service/cloudify/types/types.yaml'
       target: 'spec/cloudify/4.5.5/types.yaml'
   db_pass: 'cloud#1234'
-  ca_cert: ''
-  ca_key: ''
-
-
+  ca_cert: 'resources/cloudify_internal_ca_cert.pem'
+  external_cert: 'resources/cloudify_external_cert.crt'
+  external_key: 'resources/cloudify_external_key.pem'

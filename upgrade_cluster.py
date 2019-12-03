@@ -1,16 +1,14 @@
-import argparse
-import logging
-import yaml
 import os
+import logging
 import time
 import uuid
 import socket
+import argparse
 
+import yaml
 import openstack
-
 from fabric.api import settings, run, get, put
 from fabric.contrib.files import exists
-
 
 from cloudify_rest_client.client import CloudifyClient
 
@@ -40,8 +38,7 @@ def wait_for_ssh(server_ip):
 
 
 def prepare_ca_certificate(config):
-    if config['cloudify_config']['ca_cert'] and \
-            config['cloudify_config']['ca_key']:
+    if config['cloudify_config']['ca_cert']:
         return
     else:
         os.system('bash scripts/generateCA.sh')
@@ -65,6 +62,7 @@ def get_host_ssh_conf(server_instance, config, server_name):
     server['key'] = config['server']['key']
     server['ssh_user'] = config['server']['ssh_user']
     server['name'] = server_name
+    server['domain'] = config['server']['dns_domain']
     return server
 
 
@@ -188,12 +186,13 @@ def upload_license(server, config, logger):
 def prepare_database_install_config(server, config, db_servers, logger):
 
     ca_cert = config['cloudify_config']['ca_cert']
-    ca_key = config['cloudify_config']['ca_key']
     db_pass = config['cloudify_config']['db_pass']
     server_home_path = '/home/{}/'.format(server['ssh_user'])
 
-    host_cert, host_key = \
-        prepare_host_certificate(ca_cert, ca_key, server['name'], server['ip'])
+    host_cert, host_key = config['cloudify_config']['external_cert'], \
+                          config['cloudify_config']['external_key']
+    # prepare_host_certificate(ca_cert, config['cloudify_config']['ca_key'],
+    # server['name'], server['ip'])
 
     with get_fabric_settings(server):
         logger.info("Uploading Certs")
@@ -201,9 +200,13 @@ def prepare_database_install_config(server, config, db_servers, logger):
         put(host_cert, '{}/.certs/postgres_crt.pem'.format(server_home_path))
         put(host_key, '{}/.certs/postgres_key.pem'.format(server_home_path))
         put(ca_cert, '{}/.certs/postgres_ca.pem'.format(server_home_path))
-        put(ca_key, '{}/.certs/postgres_ca_key.pem'.format(server_home_path))
 
     install_config = dict()
+
+    install_config['manager'] = dict()
+    install_config['manager']['cli_local_profile_host_name'] = \
+        'local{}'.format(config['server']['dns_domain'])
+
     install_config['postgresql_server'] = dict()
     install_config['postgresql_server']['enable_remote_connections'] = True
     install_config['postgresql_server']['ssl_enabled'] = True
@@ -211,13 +214,12 @@ def prepare_database_install_config(server, config, db_servers, logger):
     install_config['postgresql_server']['ssl_only_connections'] = False
     install_config['postgresql_server']['postgres_password'] = db_pass
 
-    network_name = config['server']['network_name']
     install_config['postgresql_server']['cluster'] = dict()
     install_config['postgresql_server']['cluster']['nodes'] = dict()
     for k in sorted(db_servers.keys()):
         install_config['postgresql_server']['cluster']['nodes'][k] = dict()
         install_config['postgresql_server']['cluster']['nodes'][k]['ip'] = \
-            str(db_servers[k].addresses[network_name][0]['addr'])
+            k + config['server']['dns_domain']
     install_config['postgresql_server']['cluster']['etcd'] = dict()
     install_config['postgresql_server']['cluster']['etcd']['cluster_token'] = \
         db_pass
@@ -241,14 +243,13 @@ def prepare_database_install_config(server, config, db_servers, logger):
     install_config['postgresql_server']['ca_path'] = \
         '{}/.certs/postgres_ca.pem'.format(server_home_path)
     install_config['ssl_inputs'] = dict()
-    install_config['ssl_inputs']['postgresql_server_cert_path'] = \
-        '{}/.certs/postgres_crt.pem'.format(server_home_path)
-    install_config['ssl_inputs']['postgresql_server_key_path'] = \
-        '{}/.certs/postgres_key.pem'.format(server_home_path)
-    install_config['ssl_inputs']['ca_cert_path'] = \
+
+    install_config['ssl_inputs']['external_ca_cert_path'] = \
         '{}/.certs/postgres_ca.pem'.format(server_home_path)
-    install_config['ssl_inputs']['ca_key_path'] = \
-        '{}/.certs/postgres_ca_key.pem'.format(server_home_path)
+    install_config['ssl_inputs']['internal_cert_path'] = \
+        '{}/.certs/postgres_crt.pem'.format(server_home_path)
+    install_config['ssl_inputs']['internal_key_path'] = \
+        '{}/.certs/postgres_key.pem'.format(server_home_path)
 
     install_config['services_to_install'] = ['database_service']
 
@@ -259,11 +260,12 @@ def prepare_rabbitmq_install_config(server, config, rabbit_servers,
                                     first_host, erlang_cookie, logger):
 
     ca_cert = config['cloudify_config']['ca_cert']
-    ca_key = config['cloudify_config']['ca_key']
     server_home_path = '/home/{}/'.format(server['ssh_user'])
 
-    host_cert, host_key = \
-        prepare_host_certificate(ca_cert, ca_key, server['name'], server['ip'])
+    host_cert, host_key = config['cloudify_config']['external_cert'], \
+                          config['cloudify_config']['external_key']
+    # prepare_host_certificate(ca_cert, config['cloudify_config']['ca_key'],
+    # server['name'], server['ip'])
 
     with get_fabric_settings(server):
         logger.info("Uploading Certs")
@@ -271,9 +273,13 @@ def prepare_rabbitmq_install_config(server, config, rabbit_servers,
         put(host_cert, '{}/.certs/rabbitmq_crt.pem'.format(server_home_path))
         put(host_key, '{}/.certs/rabbitmq_key.pem'.format(server_home_path))
         put(ca_cert, '{}/.certs/rabbitmq_ca.pem'.format(server_home_path))
-        put(ca_key, '{}/.certs/rabbitmq_ca_key.pem'.format(server_home_path))
 
     install_config = dict()
+
+    install_config['manager'] = dict()
+    install_config['manager']['cli_local_profile_host_name'] = \
+        'local{}'.format(config['server']['dns_domain'])
+
     install_config['rabbitmq'] = dict()
     install_config['rabbitmq']['cert_path'] = \
         '{}/.certs/rabbitmq_crt.pem'.format(server_home_path)
@@ -284,14 +290,12 @@ def prepare_rabbitmq_install_config(server, config, rabbit_servers,
     install_config['rabbitmq']['nodename'] = server['name']
     install_config['rabbitmq']['erlang_cookie'] = erlang_cookie
 
-    network_name = config['server']['network_name']
     install_config['rabbitmq']['cluster_members'] = dict()
     for k in sorted(rabbit_servers.keys()):
         install_config['rabbitmq']['cluster_members'][k] = dict()
         install_config['rabbitmq']['cluster_members'][k]['networks'] = dict()
         install_config['rabbitmq']['cluster_members'][k]['networks'][
-            'default'] = str(rabbit_servers[k].addresses[network_name][0][
-                                         'addr'])
+            'default'] = k + config['server']['dns_domain']
 
     if not first_host:
         install_config['rabbitmq']['join_cluster'] = \
@@ -322,11 +326,12 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
                                    rabbit_servers, first, logger):
 
     ca_cert = config['cloudify_config']['ca_cert']
-    ca_key = config['cloudify_config']['ca_key']
     server_home_path = '/home/{}/'.format(server['ssh_user'])
 
-    host_cert, host_key = \
-        prepare_host_certificate(ca_cert, ca_key, server['name'], server['ip'])
+    host_cert, host_key = config['cloudify_config']['external_cert'], \
+                          config['cloudify_config']['external_key']
+    # prepare_host_certificate(ca_cert, config['cloudify_config']['ca_key'],
+    # server['name'], server['ip'])
 
     with get_fabric_settings(server):
         logger.info("Uploading Certs")
@@ -334,7 +339,6 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
         put(host_cert, '{}/.certs/manager_crt.pem'.format(server_home_path))
         put(host_key, '{}/.certs/manager_key.pem'.format(server_home_path))
         put(ca_cert, '{}/.certs/manager_ca.pem'.format(server_home_path))
-        put(ca_key, '{}/.certs/manager_ca_key.pem'.format(server_home_path))
 
     cfy4_config = None
     with open('resources/cfy4_config.yaml', 'r') as f:
@@ -345,6 +349,9 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
     install_config['manager']['security'] = dict()
     install_config['manager']['security']['admin_password'] = 'admin'
     install_config['manager']['security']['ssl_enabled'] = True
+    install_config['manager']['cli_local_profile_host_name'] = \
+        'local{}'.format(config['server']['dns_domain'])
+
     install_config['rabbitmq'] = dict()
     install_config['rabbitmq']['ca_path'] = \
         '{}/.certs/manager_ca.pem'.format(server_home_path)
@@ -356,7 +363,7 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
         install_config['rabbitmq']['cluster_members'][k] = dict()
         install_config['rabbitmq']['cluster_members'][k]['networks'] = dict()
         install_config['rabbitmq']['cluster_members'][k]['networks'][
-            'default'] = rabbit_servers[k]
+            'default'] = k + config['server']['dns_domain']
         install_config['rabbitmq']['cluster_members'][k]['node_id'] = \
             get_node_id(rabbit_servers[k], config, logging)
 
@@ -371,7 +378,7 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
     for k in sorted(db_servers.keys()):
         install_config['postgresql_server']['cluster']['nodes'][k] = dict()
         install_config['postgresql_server']['cluster']['nodes'][k]['ip'] = \
-            db_servers[k]
+            k + config['server']['dns_domain']
         if first:
             install_config['postgresql_server']['cluster']['nodes'][k][
                 'node_id'] = get_node_id(db_servers[k], config, logging)
@@ -382,16 +389,20 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
     install_config['postgresql_client']['server_password'] = db_pass
     install_config['postgresql_client']['ca_path'] = \
         '{}/.certs/manager_ca.pem'.format(server_home_path)
+    install_config['postgresql_client']['host'] = \
+        'local{}'.format(config['server']['dns_domain'])
 
     install_config['ssl_inputs'] = dict()
-    install_config['ssl_inputs']['ca_cert_path'] = \
-        '{}/.certs/manager_ca.pem'.format(server_home_path)
-    install_config['ssl_inputs']['ca_key_path'] = \
-        '{}/.certs/manager_ca_key.pem'.format(server_home_path)
     install_config['ssl_inputs']['external_ca_cert_path'] = \
         '{}/.certs/manager_ca.pem'.format(server_home_path)
-    install_config['ssl_inputs']['external_ca_key_path'] = \
-        '{}/.certs/manager_ca_key.pem'.format(server_home_path)
+    install_config['ssl_inputs']['external_cert_path'] = \
+        '{}/.certs/manager_crt.pem'.format(server_home_path)
+    install_config['ssl_inputs']['external_key_path'] = \
+        '{}/.certs/manager_key.pem'.format(server_home_path)
+    install_config['ssl_inputs']['internal_cert_path'] = \
+        '{}/.certs/manager_crt.pem'.format(server_home_path)
+    install_config['ssl_inputs']['internal_key_path'] = \
+        '{}/.certs/manager_key.pem'.format(server_home_path)
 
     install_config['restservice'] = dict()
     install_config['restservice']['ldap'] = dict()
@@ -422,7 +433,8 @@ def install_manager(server, logger):
     logger.info("Installing Cloudify Manager")
     with get_fabric_settings(server):
         run('cfy_manager install --private-ip %s --public-ip %s'
-            % (server['ip'], server['ip']))
+            % (server['name'] + server['domain'],
+               server['name'] + server['domain']))
 
 
 def upload_resources(server, config, logger):
@@ -452,7 +464,7 @@ def create_cluster_hosts(openstack_connection, config, logger):
 
     db_servers = dict()
     db_servers[server_name + '1'] = create_openstack_server(
-        openstack_connection, config['server'], server_name + '1', logger)
+        openstack_connection, config['server'], server_name + '1' , logger)
     db_servers[server_name + '2'] = create_openstack_server(
         openstack_connection, config['server'], server_name + '2', logger)
     db_servers[server_name + '3'] = create_openstack_server(
@@ -531,7 +543,7 @@ def configure_rabbitmq_servers(rabbit_servers, config, logger):
 
 
 def configure_cloudify_managers(db_servers, db_pass, rabbitmq_servers,
-                             manager_servers, config,  logger):
+                                manager_servers, config,  logger):
 
     cluster_memebers = dict()
 
@@ -705,9 +717,58 @@ def validate_agents(config, active_manager, logger):
         run('cfy agents validate --all-tenants')
 
 
+def add_to_hosts_servers(servers_list, db_servers, rabbit_servers,
+                         manager_servers, config, logger):
+    for k in sorted(servers_list.keys()):
+        server = get_host_ssh_conf(servers_list[k], config, k)
+        with get_fabric_settings(server):
+            logger.info("Adding hosts to /etc/hosts on {}".format(k))
+            run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
+                format('127.0.0.1', 'local' + config['server']['dns_domain']))
+            for key in sorted(db_servers.keys()):
+                run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
+                    format(db_servers[key], key))
+            for key in sorted(rabbit_servers.keys()):
+                run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
+                    format(rabbit_servers[key], key))
+            for key in sorted(manager_servers.keys()):
+                run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
+                    format(manager_servers[key], key))
+
+
+def extract_values_from_openstack_servers(config, servers_list):
+    servers = dict()
+    dns_domain = config['server']['dns_domain']
+    for k in sorted(servers_list.keys()):
+        servers[k + dns_domain] = \
+            get_host_ssh_conf(servers_list[k], config, k)['ip']
+    return servers
+
+
+def add_to_hosts_file(db_servers, rabbit_servers, manager_servers, config,
+                      logger):
+
+    extracted_database_info = \
+        extract_values_from_openstack_servers(config, db_servers)
+    extracted_rabbits_info = \
+        extract_values_from_openstack_servers(config, rabbit_servers)
+    extracted_managers_info = \
+        extract_values_from_openstack_servers(config, manager_servers)
+
+    add_to_hosts_servers(db_servers, extracted_database_info,
+                         extracted_rabbits_info, extracted_managers_info,
+                         config, logger)
+    add_to_hosts_servers(rabbit_servers, extracted_database_info,
+                         extracted_rabbits_info, extracted_managers_info,
+                         config, logger)
+    add_to_hosts_servers(manager_servers, extracted_database_info,
+                         extracted_rabbits_info, extracted_managers_info,
+                         config, logger)
+
+
 def prepare_cfy_5_cluster(config, logger):
 
-    prepare_ca_certificate(config)
+    #prepare_ca_certificate(config)
 
     download_cloudify_rpm_locally(config['cloudify_config']['rpm_url'], logger)
 
@@ -715,6 +776,9 @@ def prepare_cfy_5_cluster(config, logger):
 
     db_servers, rabbit_servers, manager_servers = create_cluster_hosts(
         openstack_connection, config, logger)
+
+    add_to_hosts_file(db_servers, rabbit_servers, manager_servers, config,
+                      logger)
 
     db_servers, db_pass = configure_database_servers(db_servers, config,
                                                      logger)
@@ -726,6 +790,7 @@ def prepare_cfy_5_cluster(config, logger):
                                                     rabbitmq_cluster_members,
                                                     manager_servers, config,
                                                     logger)
+
     return cloudify_managers.values(), rabbitmq_cluster_members.values()
 
 
@@ -784,13 +849,13 @@ def main():
 
     logging.basicConfig(level=logging.INFO)
 
-    active_cfy4_manager = get_cfy_manager4_active(config)
-    logging.info("Active Manager in 4.X Cluster is {}".format(
-        active_cfy4_manager))
-    get_cfy4_config(config, active_cfy4_manager, logging)
-    get_cfy4_ssh_files(config, active_cfy4_manager, logging)
-    create_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
-    get_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
+    # active_cfy4_manager = get_cfy_manager4_active(config)
+    # logging.info("Active Manager in 4.X Cluster is {}".format(
+    #     active_cfy4_manager))
+    # get_cfy4_config(config, active_cfy4_manager, logging)
+    # get_cfy4_ssh_files(config, active_cfy4_manager, logging)
+    # create_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
+    # get_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
 
     cfy5_managers, rabbitmq_servers = prepare_cfy_5_cluster(config, logging)
     active_cfy5_manager = cfy5_managers[0]
