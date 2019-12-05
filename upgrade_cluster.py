@@ -402,7 +402,7 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
 
     install_config['networks'] = dict()
     install_config['networks']['default'] = \
-        'manager-proxy{}'.format(config['server']['dns_domain'])
+        'proxy{}'.format(config['server']['dns_domain'])
 
     install_config['ssl_inputs'] = dict()
     install_config['ssl_inputs']['ca_cert_path'] = \
@@ -704,10 +704,6 @@ def restore_snapshot(config, active_manager, snapshot_id, logger, f=False):
     server['ssh_user'] = config['server']['ssh_user']
     with get_fabric_settings(server):
         logger.info('restore snapshot')
-        run("sudo sed -i 's/{0} manager-proxy{1}/{2} manager-proxy{1}/g'  "
-            "/etc/hosts ".format(config['cloudify_config']['ha_proxy'],
-                                 config['server']['dns_domain'],
-                                 active_manager))
         output = ''
         if f:
             output = run('cfy snapshots restore %s --force ' % snapshot_id)
@@ -737,10 +733,6 @@ def restore_snapshot(config, active_manager, snapshot_id, logger, f=False):
                     if str(e).find('Internal error') > -1 or \
                             str(e).find('No active license') > -1:
                         time.sleep(EXECUTION_POLL_INTERVAL_SECONDS)
-            run("sudo sed -i 's/{0} manager-proxy{1}/{2} manager-proxy{1}/g'  "
-                "/etc/hosts ".format(active_manager,
-                                     config['server']['dns_domain'],
-                                     config['cloudify_config']['ha_proxy']))
         else:
             failed = True
 
@@ -779,9 +771,6 @@ def add_to_hosts_servers(servers_list, db_servers, rabbit_servers,
             run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
                 format(config['cloudify_config']['ha_proxy'],
                        'proxy' + config['server']['dns_domain']))
-            run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
-                format(config['cloudify_config']['ha_proxy'],
-                       'manager-proxy' + config['server']['dns_domain']))
             for key in sorted(db_servers.keys()):
                 run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
                     format(db_servers[key], key))
