@@ -12,7 +12,7 @@ from fabric.contrib.files import exists
 
 from cloudify_rest_client.client import CloudifyClient
 
-EXECUTION_POLL_INTERVAL_SECONDS = 5
+EXECUTION_POLL_INTERVAL_SECONDS = 20
 THIS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -70,6 +70,7 @@ def get_fabric_settings(host):
     return settings(
         connection_attempts=5,
         disable_known_hosts=True,
+        warn_only=True,
         host_string=host['ip'],
         key_filename=os.path.abspath(host['key']),
         user=host['ssh_user'])
@@ -153,9 +154,11 @@ def update_config(server, install_config, updated_config, logger):
     def _update(original, updates):
         for k, v in updates.iteritems():
             if isinstance(v, dict):
-                if k == 'cluster_members':
+                if k == 'cluster_members':  # special cases since we add keys
                     original[k] = v
                 elif k == 'cluster':
+                    original[k] = v
+                elif k == 'networks':
                     original[k] = v
                 else:
                     _update(original[k], v)
@@ -301,6 +304,10 @@ def prepare_rabbitmq_install_config(server, config, rabbit_servers,
         install_config['rabbitmq']['join_cluster'] = \
             sorted(rabbit_servers.keys())[0]
 
+    install_config['networks'] = dict()
+    install_config['networks']['default'] = \
+        'proxy{}'.format(config['server']['dns_domain'])
+
     install_config['services_to_install'] = ['queue_service']
 
     return install_config
@@ -363,7 +370,8 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
         install_config['rabbitmq']['cluster_members'][k] = dict()
         install_config['rabbitmq']['cluster_members'][k]['networks'] = dict()
         install_config['rabbitmq']['cluster_members'][k]['networks'][
-            'default'] = k + config['server']['dns_domain']
+            'default'] = 'proxy{}'.format(config['server'][
+                                                               'dns_domain'])
         install_config['rabbitmq']['cluster_members'][k]['node_id'] = \
             get_node_id(rabbit_servers[k], config, logging)
 
@@ -392,7 +400,13 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
     install_config['postgresql_client']['host'] = \
         'local{}'.format(config['server']['dns_domain'])
 
+    install_config['networks'] = dict()
+    install_config['networks']['default'] = \
+        'manager-proxy{}'.format(config['server']['dns_domain'])
+
     install_config['ssl_inputs'] = dict()
+    install_config['ssl_inputs']['ca_cert_path'] = \
+        '{}/.certs/manager_ca.pem'.format(server_home_path)
     install_config['ssl_inputs']['external_ca_cert_path'] = \
         '{}/.certs/manager_ca.pem'.format(server_home_path)
     install_config['ssl_inputs']['external_cert_path'] = \
@@ -403,6 +417,8 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
         '{}/.certs/manager_crt.pem'.format(server_home_path)
     install_config['ssl_inputs']['internal_key_path'] = \
         '{}/.certs/manager_key.pem'.format(server_home_path)
+    install_config['ssl_inputs']['internal_manager_host'] = \
+        'local{}'.format(config['server']['dns_domain'])
 
     install_config['restservice'] = dict()
     install_config['restservice']['ldap'] = dict()
@@ -497,9 +513,6 @@ def configure_database_servers(db_servers, config, logger):
 
     for k in sorted(db_servers.keys()):
         server = get_host_ssh_conf(db_servers[k], config, k)
-        wait_for_ssh(server['ip'])
-        download_cloudify_rpm(server, config['cloudify_config']['rpm_url'],
-                              logger)
         install_rpm(server, logger)
         install_config = prepare_database_install_config(server,
                                                          config,
@@ -523,9 +536,6 @@ def configure_rabbitmq_servers(rabbit_servers, config, logger):
 
     for k in sorted(rabbit_servers.keys()):
         server = get_host_ssh_conf(rabbit_servers[k], config, k)
-        wait_for_ssh(server['ip'])
-        download_cloudify_rpm(server, config['cloudify_config']['rpm_url'],
-                              logger)
         install_rpm(server, logger)
         install_config = prepare_rabbitmq_install_config(server,
                                                          config,
@@ -550,9 +560,6 @@ def configure_cloudify_managers(db_servers, db_pass, rabbitmq_servers,
     first = True
     for k in sorted(manager_servers.keys()):
         server = get_host_ssh_conf(manager_servers[k], config, k)
-        wait_for_ssh(server['ip'])
-        download_cloudify_rpm(server, config['cloudify_config']['rpm_url'],
-                              logger)
         install_rpm(server, logger)
         install_config = prepare_manager_install_config(server,
                                                         config,
@@ -621,8 +628,8 @@ def create_snapshot(config, active_manager, snapshot_id, logger):
         snapshot_id,
         include_metrics=False,
         include_credentials=True,
-        include_logs=True,
-        include_events=True
+        # include_logs=True,
+        # include_events=True
     )
     wait_for_terminated_status(client, execution, logger)
 
@@ -662,7 +669,7 @@ def get_cfy4_ssh_files(config, active_manager, logger):
 
 
 def put_cfy4_ssh_files_to_cfy5(config, cfy_5_managers, logger):
-    for manager in cfy_5_managers:
+    for manager in cfy_5_managers.values():
         server = dict()
         server['ip'] = manager
         server['key'] = config['server']['key']
@@ -673,7 +680,9 @@ def put_cfy4_ssh_files_to_cfy5(config, cfy_5_managers, logger):
             put('resources/.ssh/*', '/tmp/.ssh/', use_sudo=True)
             logger.info("Moving temporary files into /etc/cloudify/.ssh")
             run('sudo mv /tmp/.ssh /etc/cloudify/.ssh')
-            run('sudo chown cfyuser:cfyuser /etc/cloudify/.ssh')
+            run('sudo chown -R cfyuser:cfyuser /etc/cloudify/.ssh')
+            run('sudo chmod 755 /etc/cloudify/.ssh')
+            run('sudo chmod 600 /etc/cloudify/.ssh/*')
 
 
 def upload_snapshot(config, active_manager, snapshot_id, logger):
@@ -688,13 +697,55 @@ def upload_snapshot(config, active_manager, snapshot_id, logger):
                                                snapshot_id))
 
 
-def restore_snapshot(config, active_manager, snapshot_id, logger):
-    client = CloudifyClient(
-        host=active_manager,
-        **config['cloudify_config']['rest_client']
-    )
-    execution = client.snapshots.restore(snapshot_id)
-    wait_for_terminated_status(client, execution, logger, True)
+def restore_snapshot(config, active_manager, snapshot_id, logger, f=False):
+    server = dict()
+    server['ip'] = active_manager
+    server['key'] = config['server']['key']
+    server['ssh_user'] = config['server']['ssh_user']
+    with get_fabric_settings(server):
+        logger.info('restore snapshot')
+        run("sudo sed -i 's/{0} manager-proxy{1}/{2} manager-proxy{1}/g'  "
+            "/etc/hosts ".format(config['cloudify_config']['ha_proxy'],
+                                 config['server']['dns_domain'],
+                                 active_manager))
+        output = ''
+        if f:
+            output = run('cfy snapshots restore %s --force ' % snapshot_id)
+        else:
+            output = run('cfy snapshots restore %s ' % snapshot_id)
+        execution_id = ''
+        for line in output.splitlines():
+            if line.startswith("Started workflow execution"):
+                execution_id = line.split(".")[1].split()[-1]
+                break
+        failed = False
+        if execution_id:
+            wait = True
+            while wait:
+                try:
+                    output = run('cfy executions get %s ' % execution_id)
+                    for line in output.splitlines():
+                        if len(line.split()) > 1 and line.split()[1] == \
+                                execution_id:
+                            if line.split("|")[3].strip() == 'completed':
+                                wait = False
+                            elif line.split("|")[3].strip() == 'failed':
+                                failed = True
+                                wait = False
+                    time.sleep(EXECUTION_POLL_INTERVAL_SECONDS)
+                except Exception as e:
+                    if str(e).find('Internal error') > -1 or \
+                            str(e).find('No active license') > -1:
+                        time.sleep(EXECUTION_POLL_INTERVAL_SECONDS)
+            run("sudo sed -i 's/{0} manager-proxy{1}/{2} manager-proxy{1}/g'  "
+                "/etc/hosts ".format(active_manager,
+                                     config['server']['dns_domain'],
+                                     config['cloudify_config']['ha_proxy']))
+        else:
+            failed = True
+
+        if failed:
+            restore_snapshot(config, active_manager, snapshot_id, logger, True)
 
 
 def install_all_agents(config, active_manager, logger):
@@ -725,6 +776,12 @@ def add_to_hosts_servers(servers_list, db_servers, rabbit_servers,
             logger.info("Adding hosts to /etc/hosts on {}".format(k))
             run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
                 format('127.0.0.1', 'local' + config['server']['dns_domain']))
+            run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
+                format(config['cloudify_config']['ha_proxy'],
+                       'proxy' + config['server']['dns_domain']))
+            run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
+                format(config['cloudify_config']['ha_proxy'],
+                       'manager-proxy' + config['server']['dns_domain']))
             for key in sorted(db_servers.keys()):
                 run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
                     format(db_servers[key], key))
@@ -734,6 +791,26 @@ def add_to_hosts_servers(servers_list, db_servers, rabbit_servers,
             for key in sorted(manager_servers.keys()):
                 run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
                     format(manager_servers[key], key))
+
+
+def add_hosts_to_haproxy(db_servers, rabbit_servers, manager_servers, config,
+                         logger):
+    server = dict()
+    server['ip'] = config['cloudify_config']['ha_proxy']
+    server['key'] = config['server']['key']
+    server['ssh_user'] = config['server']['ssh_user']
+
+    with get_fabric_settings(server):
+        logger.info("Adding hosts to /etc/hosts on ha_proxy")
+        for key in sorted(db_servers.keys()):
+            run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
+                format(db_servers[key], key))
+        for key in sorted(rabbit_servers.keys()):
+            run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
+                format(rabbit_servers[key], key))
+        for key in sorted(manager_servers.keys()):
+            run("sudo bash -c 'echo {0} {1} >> /etc/hosts'".
+                format(manager_servers[key], key))
 
 
 def extract_values_from_openstack_servers(config, servers_list):
@@ -765,6 +842,96 @@ def add_to_hosts_file(db_servers, rabbit_servers, manager_servers, config,
                          extracted_rabbits_info, extracted_managers_info,
                          config, logger)
 
+    add_hosts_to_haproxy(extracted_database_info,
+                         extracted_rabbits_info, extracted_managers_info,
+                         config, logger)
+
+
+def copy_cloudify_rpm_to_hosts(db_servers, rabbit_servers, manager_servers,
+                               config, logger):
+
+    def copy_rpm_to_server(server):
+        with get_fabric_settings(server):
+            download_cloudify_rpm(server, config['cloudify_config']['rpm_url'],
+                                  logger)
+
+    for k in sorted(db_servers.keys()):
+        server = get_host_ssh_conf(db_servers[k], config, k)
+        wait_for_ssh(server['ip'])
+        copy_rpm_to_server(server)
+    for k in sorted(rabbit_servers.keys()):
+        server = get_host_ssh_conf(rabbit_servers[k], config, k)
+        wait_for_ssh(server['ip'])
+        copy_rpm_to_server(server)
+    for k in sorted(manager_servers.keys()):
+        server = get_host_ssh_conf(manager_servers[k], config, k)
+        wait_for_ssh(server['ip'])
+        copy_rpm_to_server(server)
+
+
+def reconfigure_ha_proxy(config, rabbit_servers, manager_servers, logger):
+    server = dict()
+    server['ip'] = config['cloudify_config']['ha_proxy']
+    server['key'] = config['server']['key']
+    server['ssh_user'] = config['server']['ssh_user']
+    ca_cert = config['cloudify_config']['ca_cert']
+
+    rabbitmq_servers = \
+        extract_values_from_openstack_servers(config, rabbit_servers)
+    cfy_5_managers = \
+        extract_values_from_openstack_servers(config, manager_servers)
+
+    with get_fabric_settings(server):
+        logger.info('replace cfy4 ips with cfy5')
+
+        put(ca_cert, '/tmp/ca')
+        run("sudo mv /tmp/ca /etc/haproxy/ca")
+        run("sudo chown root:root /etc/haproxy/ca")
+        run("sudo chmod 644 /etc/haproxy/ca")
+
+        run("sudo sed -i 's/server cm1.*:5671/server {0} {1}:5671/g'  "
+            "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers.keys()[0],
+                                              rabbitmq_servers.keys()[0]))
+        run("sudo sed -i 's/server cm2.*:5671/server {0} {1}:5671/g'  "
+            "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers.keys()[1],
+                                              rabbitmq_servers.keys()[1]))
+        run("sudo sed -i 's/server cm3.*:5671/server {0} {1}:5671/g'  "
+            "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers.keys()[2],
+                                              rabbitmq_servers.keys()[2]))
+        # add port 15671 for ssl rabbits
+        config_for_port = """
+frontend rabbitmq_ssl_front
+   bind proxy{0}:15671 ssl crt /etc/haproxy/cert no-sslv3
+   redirect scheme https if !{{ ssl_fc }}
+   default_backend rabbitmq_ssl_back
+backend rabbitmq_ssl_back
+   option forceclose
+   option forwardfor
+   stick-table type ip size 1m expire 1h
+   stick on src
+   default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+     server {1} {1}:15671 maxconn 32 ssl check check-ssl port 15671 ca-file {4}
+     server {2} {2}:15671 maxconn 32 ssl check check-ssl port 15671 ca-file {4}
+     server {3} {3}:15671 maxconn 32 ssl check check-ssl port 15671 ca-file {4}
+        """.format(config['server']['dns_domain'],
+                   rabbitmq_servers.keys()[0],
+                   rabbitmq_servers.keys()[1],
+                   rabbitmq_servers.keys()[2], '/etc/haproxy/ca')
+        run("sudo bash -c 'echo \"{0}\" >> /etc/haproxy/haproxy.cfg'".
+            format(config_for_port))
+
+
+        run("sudo sed -i 's/server cm1.*:/server {0} {1}:/g'  "
+            "/etc/haproxy/haproxy.cfg".format(cfy_5_managers.keys()[0],
+                                              cfy_5_managers.keys()[0]))
+        run("sudo sed -i 's/server cm2.*:/server {0} {1}:/g'  "
+            "/etc/haproxy/haproxy.cfg".format(cfy_5_managers.keys()[1],
+                                              cfy_5_managers.keys()[1]))
+        run("sudo sed -i 's/server cm3.*:/server {0} {1}:/g'  "
+            "/etc/haproxy/haproxy.cfg".format(cfy_5_managers.keys()[2],
+                                              cfy_5_managers.keys()[2]))
+        run('sudo systemctl restart haproxy')
+
 
 def prepare_cfy_5_cluster(config, logger):
 
@@ -780,6 +947,11 @@ def prepare_cfy_5_cluster(config, logger):
     add_to_hosts_file(db_servers, rabbit_servers, manager_servers, config,
                       logger)
 
+    copy_cloudify_rpm_to_hosts(db_servers, rabbit_servers, manager_servers,
+                               config, logger)
+
+    reconfigure_ha_proxy(config, rabbit_servers, manager_servers, logging)
+
     db_servers, db_pass = configure_database_servers(db_servers, config,
                                                      logger)
 
@@ -791,11 +963,11 @@ def prepare_cfy_5_cluster(config, logger):
                                                     manager_servers, config,
                                                     logger)
 
-    return cloudify_managers.values(), rabbitmq_cluster_members.values()
+    return cloudify_managers, rabbitmq_cluster_members
 
 
 def stop_cfy_5_other_mangers(config, cfy_5_managers, active_manager, logger):
-    for manager in cfy_5_managers:
+    for manager in cfy_5_managers.values():
         if manager != active_manager:
             server = dict()
             server['ip'] = manager
@@ -807,7 +979,7 @@ def stop_cfy_5_other_mangers(config, cfy_5_managers, active_manager, logger):
 
 
 def start_cfy_5_other_mangers(config, cfy_5_managers, active_manager, logger):
-    for manager in cfy_5_managers:
+    for manager in cfy_5_managers.values():
         if manager != active_manager:
             server = dict()
             server['ip'] = manager
@@ -816,30 +988,6 @@ def start_cfy_5_other_mangers(config, cfy_5_managers, active_manager, logger):
             with get_fabric_settings(server):
                 logger.info('start manager')
                 run('cfy_manager start')
-
-
-def reconfigure_ha_proxy(config, rabbitmq_servers, cfy_5_managers, logger):
-    server = dict()
-    server['ip'] = config['cloudify_config']['ha_proxy']
-    server['key'] = config['server']['key']
-    server['ssh_user'] = config['server']['ssh_user']
-    with get_fabric_settings(server):
-        logger.info('replace cfy4 ips with cfy5')
-
-        run("sudo sed -i 's/server cm1.*:5671/server rabbitmq-1 {}:5671/g'  "
-            "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers[0]))
-        run("sudo sed -i 's/server cm2.*:5671/server rabbitmq-2 {}:5671/g'  "
-            "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers[1]))
-        run("sudo sed -i 's/server cm3.*:5671/server rabbitmq-3 {}:5671/g'  "
-            "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers[2]))
-
-        run("sudo sed -i 's/server cm1.*:/server cfymgr-1 {}:/g'  "
-            "/etc/haproxy/haproxy.cfg".format(cfy_5_managers[0]))
-        run("sudo sed -i 's/server cm2.*:/server cfymgr-2 {}:/g'  "
-            "/etc/haproxy/haproxy.cfg".format(cfy_5_managers[1]))
-        run("sudo sed -i 's/server cm3.*:/server cfymgr-3 {}:/g'  "
-            "/etc/haproxy/haproxy.cfg".format(cfy_5_managers[2]))
-        run('sudo systemctl restart haproxy')
 
 
 def main():
@@ -858,7 +1006,7 @@ def main():
     get_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
 
     cfy5_managers, rabbitmq_servers = prepare_cfy_5_cluster(config, logging)
-    active_cfy5_manager = cfy5_managers[0]
+    active_cfy5_manager = cfy5_managers.values()[0]
     logging.info("Active Manager in 5.X Cluster is {}".format(
         active_cfy5_manager))
     stop_cfy_5_other_mangers(config, cfy5_managers, active_cfy5_manager,
@@ -868,7 +1016,6 @@ def main():
     start_cfy_5_other_mangers(config, cfy5_managers, active_cfy5_manager,
                               logging)
     put_cfy4_ssh_files_to_cfy5(config, cfy5_managers, logging)
-    reconfigure_ha_proxy(config, rabbitmq_servers, cfy5_managers, logging)
     install_all_agents(config, active_cfy5_manager, logging)
     validate_agents(config, active_cfy5_manager, logging)
 
