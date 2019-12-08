@@ -878,6 +878,9 @@ def reconfigure_ha_proxy(config, rabbit_servers, manager_servers, logger):
         run("sudo chown root:root /etc/haproxy/ca")
         run("sudo chmod 644 /etc/haproxy/ca")
 
+        run("sudo sed -i 's/HTTP.*//' /etc/haproxy/haproxy.cfg")
+        run("sudo sed -i 's/status 200/status 401/' /etc/haproxy/haproxy.cfg")
+
         run("sudo sed -i 's/server cm1.*:5671/server {0} {1}:5671/g'  "
             "/etc/haproxy/haproxy.cfg".format(rabbitmq_servers.keys()[0],
                                               rabbitmq_servers.keys()[0]))
