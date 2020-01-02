@@ -2,6 +2,8 @@ import os
 import logging
 import time
 import uuid
+import zipfile
+import json
 import socket
 import argparse
 
@@ -13,6 +15,9 @@ from fabric.contrib.files import exists
 from cloudify_rest_client.client import CloudifyClient
 
 EXECUTION_POLL_INTERVAL_SECONDS = 20
+# in these cases we add (dict) to config
+SPECIAL_UPDATE_CONFIG_CASES = ('cluster_members', 'cluster', 'networks',
+                               'flask_security')
 THIS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -154,11 +159,7 @@ def update_config(server, install_config, updated_config, logger):
     def _update(original, updates):
         for k, v in updates.iteritems():
             if isinstance(v, dict):
-                if k == 'cluster_members':  # special cases since we add keys
-                    original[k] = v
-                elif k == 'cluster':
-                    original[k] = v
-                elif k == 'networks':
+                if k in SPECIAL_UPDATE_CONFIG_CASES:
                     original[k] = v
                 else:
                     _update(original[k], v)
@@ -440,6 +441,10 @@ def prepare_manager_install_config(server, config, db_servers, db_pass,
     install_config['provider_context']['import_resolver']['parameters'][
         'fallback'] = False
 
+    install_config['flask_security'] = dict()
+    install_config['flask_security']['encoding_alphabet'] = \
+        get_flask_security()
+
     install_config['services_to_install'] = ['manager_service']
 
     return install_config
@@ -632,6 +637,19 @@ def create_snapshot(config, active_manager, snapshot_id, logger):
         # include_events=True
     )
     wait_for_terminated_status(client, execution, logger)
+
+
+def get_flask_security():
+    # get flask security
+    flask_encoding = ''
+    archive = zipfile.ZipFile('snapshot-4.zip')
+    try:
+        rest_security = archive.read('rest-security.conf')
+        rest_security = json.loads(rest_security)
+        flask_encoding = rest_security.get('encoding_alphabet', "")
+    except KeyError:
+        flask_encoding = ''
+    return flask_encoding
 
 
 def get_snapshot(config, active_manager, snapshot_id, logger):
@@ -925,6 +943,59 @@ backend rabbitmq_ssl_back
         run('sudo systemctl restart haproxy')
 
 
+def configure_status_reporter_on_host(servers_list, manager_servers, token,
+                                      instance_type, config, logger):
+    managers_ips = ''
+    for k in sorted(manager_servers.keys()):
+        managers_ips = managers_ips + k + ' '
+
+    for k in sorted(servers_list.keys()):
+        server = get_host_ssh_conf(servers_list[k], config, k)
+        server_home_path = '/home/{}/'.format(server['ssh_user'])
+        with get_fabric_settings(server):
+            logger.info("configure status reporter on  {}".format(k))
+            if instance_type == 'db':
+                run('cfy_manager status-reporter configure --managers-ip '
+                    '{managers_ips} --token {token} --ca-path {ca_path} '
+                    '--reporting-freq 5 --user-name db_status_reporter'.
+                    format(managers_ips=managers_ips, token=token,
+                           ca_path='{}/.certs/postgres_ca.pem'.
+                           format(server_home_path)))
+            elif instance_type == 'broker':
+                run('cfy_manager status-reporter configure --managers-ip '
+                    '{managers_ips} --token {token} --ca-path {ca_path} '
+                    '--reporting-freq 5 --user-name broker_status_reporter'.
+                    format(managers_ips=managers_ips, token=token,
+                           ca_path='{}/.certs/rabbitmq_ca.pem'.
+                           format(server_home_path)))
+
+
+def get_reporters_tokens(manager_servers, config, logger):
+    first_manager = manager_servers.keys()[0]
+    server = get_host_ssh_conf(manager_servers[first_manager], config,
+                               first_manager)
+    with get_fabric_settings(server):
+        logger.info("get tokens license file")
+        result = run('cfy_manager status-reporter get-tokens --json')
+        reporters_tokens = json.loads(result)
+        return (reporters_tokens['db_status_reporter'],
+                reporters_tokens['broker_status_reporter'])
+
+
+def configure_status_reporter(db_servers, rabbit_servers, manager_servers,
+                              config, logger):
+    extracted_managers_info = \
+        extract_values_from_openstack_servers(config, manager_servers)
+
+    db_token, rabbitmq_token = \
+        get_reporters_tokens(manager_servers, config, logger)
+
+    configure_status_reporter_on_host(db_servers, extracted_managers_info,
+                                      db_token, 'db', config, logger)
+    configure_status_reporter_on_host(rabbit_servers, extracted_managers_info,
+                                      rabbitmq_token, 'broker', config, logger)
+
+
 def prepare_cfy_5_cluster(config, logger):
 
     #prepare_ca_certificate(config)
@@ -955,7 +1026,10 @@ def prepare_cfy_5_cluster(config, logger):
                                                     manager_servers, config,
                                                     logger)
 
-    return cloudify_managers, rabbitmq_cluster_members
+    configure_status_reporter(db_servers, rabbit_servers, manager_servers,
+                              config, logger)
+
+    return cloudify_managers
 
 
 def stop_cfy_5_other_mangers(config, cfy_5_managers, active_manager, logger):
@@ -997,7 +1071,7 @@ def main():
     create_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
     get_snapshot(config, active_cfy4_manager, 'upgrade-to-cfy5', logging)
 
-    cfy5_managers, rabbitmq_servers = prepare_cfy_5_cluster(config, logging)
+    cfy5_managers = prepare_cfy_5_cluster(config, logging)
     active_cfy5_manager = cfy5_managers.values()[0]
     logging.info("Active Manager in 5.X Cluster is {}".format(
         active_cfy5_manager))
