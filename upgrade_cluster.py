@@ -649,7 +649,7 @@ def get_flask_security():
         flask_encoding = rest_security.get('encoding_alphabet', "")
     except KeyError:
         flask_encoding = ''
-    return flask_encoding
+    return str(flask_encoding)
 
 
 def get_snapshot(config, active_manager, snapshot_id, logger):
