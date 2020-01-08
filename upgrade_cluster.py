@@ -1015,13 +1015,14 @@ def prepare_cfy_5_cluster(config, logger):
 
     reconfigure_ha_proxy(config, rabbit_servers, manager_servers, logging)
 
-    db_servers, db_pass = configure_database_servers(db_servers, config,
-                                                     logger)
+    db_cluster_members, db_pass = configure_database_servers(db_servers,
+                                                             config, logger)
 
     rabbitmq_cluster_members = configure_rabbitmq_servers(rabbit_servers,
                                                           config, logging)
 
-    cloudify_managers = configure_cloudify_managers(db_servers, db_pass,
+    cloudify_managers = configure_cloudify_managers(db_cluster_members,
+                                                    db_pass,
                                                     rabbitmq_cluster_members,
                                                     manager_servers, config,
                                                     logger)
