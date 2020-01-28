@@ -951,7 +951,6 @@ def configure_status_reporter_on_host(servers_list, manager_servers, token,
 
     for k in sorted(servers_list.keys()):
         server = get_host_ssh_conf(servers_list[k], config, k)
-        server_home_path = '/home/{}/'.format(server['ssh_user'])
         with get_fabric_settings(server):
             logger.info("configure status reporter on  {}".format(k))
             if instance_type == 'db':
@@ -959,15 +958,13 @@ def configure_status_reporter_on_host(servers_list, manager_servers, token,
                     '{managers_ips} --token {token} --ca-path {ca_path} '
                     '--reporting-freq 5 --user-name db_status_reporter'.
                     format(managers_ips=managers_ips, token=token,
-                           ca_path='{}/.certs/postgres_ca.pem'.
-                           format(server_home_path)))
+                           ca_path='/var/lib/patroni/ca.crt'))
             elif instance_type == 'broker':
                 run('cfy_manager status-reporter configure --managers-ip '
                     '{managers_ips} --token {token} --ca-path {ca_path} '
                     '--reporting-freq 5 --user-name broker_status_reporter'.
                     format(managers_ips=managers_ips, token=token,
-                           ca_path='{}/.certs/rabbitmq_ca.pem'.
-                           format(server_home_path)))
+                           ca_path='/etc/cloudify/ssl/rabbitmq-ca.pem'))
 
 
 def get_reporters_tokens(manager_servers, config, logger):
