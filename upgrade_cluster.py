@@ -1,16 +1,16 @@
 import os
-import logging
+import yaml
 import time
 import uuid
-import zipfile
 import json
 import socket
 import argparse
+import logging
+import zipfile
 
-import yaml
 import openstack
-from fabric.api import settings, run, get, put
 from fabric.contrib.files import exists
+from fabric.api import settings, run, get, put
 
 from cloudify_rest_client.client import CloudifyClient
 
@@ -953,7 +953,14 @@ def configure_status_reporter_on_host(servers_list, manager_servers, token,
         server = get_host_ssh_conf(servers_list[k], config, k)
         with get_fabric_settings(server):
             logger.info("configure status reporter on  {}".format(k))
-            if instance_type == 'db':
+            if instance_type == 'manager':
+                run('cfy_manager status-reporter configure --managers-ip '
+                    '{managers_ips} --token {token} --ca-path {ca_path} '
+                    '--reporting-freq 5 --user-name manager_status_reporter'.
+                    format(managers_ips=managers_ips, token=token,
+                           ca_path= \
+                           '/etc/cloudify/ssl/cloudify_internal_ca_cert.pem'))
+            elif instance_type == 'db':
                 run('cfy_manager status-reporter configure --managers-ip '
                     '{managers_ips} --token {token} --ca-path {ca_path} '
                     '--reporting-freq 5 --user-name db_status_reporter'.
@@ -975,7 +982,8 @@ def get_reporters_tokens(manager_servers, config, logger):
         logger.info("get tokens license file")
         result = run('cfy_manager status-reporter get-tokens --json')
         reporters_tokens = json.loads(result)
-        return (reporters_tokens['db_status_reporter'],
+        return (reporters_tokens['manager_status_reporter'],
+                reporters_tokens['db_status_reporter'],
                 reporters_tokens['broker_status_reporter'])
 
 
@@ -984,9 +992,11 @@ def configure_status_reporter(db_servers, rabbit_servers, manager_servers,
     extracted_managers_info = \
         extract_values_from_openstack_servers(config, manager_servers)
 
-    db_token, rabbitmq_token = \
+    manager_token, db_token, rabbitmq_token = \
         get_reporters_tokens(manager_servers, config, logger)
 
+    configure_status_reporter_on_host(manager_servers, extracted_managers_info,
+                                      manager_token, 'manager', config, logger)
     configure_status_reporter_on_host(db_servers, extracted_managers_info,
                                       db_token, 'db', config, logger)
     configure_status_reporter_on_host(rabbit_servers, extracted_managers_info,
