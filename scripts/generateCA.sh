@@ -13,7 +13,7 @@ L = Nablus
 O = Cloudify
 OU = IT
 CN = Cloudify
-emailAddress = ahmad@cloudify.co
+emailAddress = ahmadiesa@gmail.com
 EOF
 
 openssl req -x509 -config openssl.cnf -new -key ca_key.pem -days 3650 -out ca_crt.pem
