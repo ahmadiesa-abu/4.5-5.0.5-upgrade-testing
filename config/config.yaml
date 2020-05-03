@@ -3,25 +3,25 @@ openstack:
   password: ''
   tenant_name: ''
   project_name: ''
-  auth_url: 'https://rackspace-api.cloudify.co:5000/v3'
+  auth_url: 'https://{openstack_auth_ip}:5000/v3' # depends on you environment
   region: 'RegionOne'
 
 
 server:
-  image_name: 'rhel-server-7.6'
-  flavor_name: 'm1.medium'
-  network_name: 'PublicNetwork'
-  security_group: 'allow-all'
+  image_name: '' # image name that will be used when creating 5.0.5 cluster
+  flavor_name: '' # flavor name or id to use when creating the new cluster machines
+  network_name: '' # name of network connected to router - also connected to the external network
+  security_group: 'allow-all' # cloud be not allow all , but you need to have a security group that has all the needed ports
   keypair_name: 'agent_key'
-  ssh_user: 'cloud-user'
+  ssh_user: '' # ssh user for the provided image 
   key: 'resources/cm.key'
   db_server_name: 'postgres-'
   rabbit_server_name: 'rabbitmq-'
   manager_server_name: 'cfymgr-'
-  dns_domain: '.fairvlad.dns-cloud.net'
+  dns_domain: '.localdomain.com'
 
 cloudify_config:
-  rpm_url: 'http://cloudify-release-eu.s3.amazonaws.com/cloudify/5.0.5/.dev1-release/cloudify-manager-install-5.0.5-.dev1.x86_64.rpm'
+  rpm_url: 'http://repository.cloudifysource.org/cloudify/5.0.5/ga-release/cloudify-manager-install-5.0.5-ga.x86_64.rpm'
   cfy4_ips:
     - '172.17.150.220'
     - '172.17.150.219'
@@ -38,7 +38,7 @@ cloudify_config:
   resources:
     - source: 'https://raw.githubusercontent.com/cloudify-cosmo/cloudify-manager/4.5.5/resources/rest-service/cloudify/types/types.yaml'
       target: 'spec/cloudify/4.5.5/types.yaml'
-  db_pass: 'cloud#1234'
+  db_pass: 'cloud#1234' # cloud put anything and it will be the pass ;)
   ca_cert: 'resources/cloudify_internal_ca_cert.pem'
   external_cert: 'resources/cloudify_external_cert.crt'
   external_key: 'resources/cloudify_external_key.pem'
